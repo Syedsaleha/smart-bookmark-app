@@ -1,65 +1,132 @@
-import Image from "next/image";
+'use client'
+import { useEffect, useState, useCallback } from 'react'
+import { createClient } from '@/utils/supabase'
 
 export default function Home() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+  const supabase = createClient()
+  const [user, setUser] = useState<any>(null)
+  const [bookmarks, setBookmarks] = useState<any[]>([])
+  const [title, setTitle] = useState('')
+  const [url, setUrl] = useState('')
+
+  const formatUrl = (u: string) => u.startsWith('http') ? u : `https://${u}`
+
+  const fetchBookmarks = useCallback(async () => {
+    const { data } = await supabase
+      .from('bookmarks')
+      .select('*')
+      .order('created_at', { ascending: false })
+    if (data) setBookmarks(data)
+  }, [supabase])
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUser(data.user))
+    fetchBookmarks()
+
+    const channel = supabase.channel('realtime-bookmarks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bookmarks' }, () => {
+        fetchBookmarks()
+      }).subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [supabase, fetchBookmarks])
+
+  // --- OPTIMISTIC ADD LOGIC ---
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!user) return
+
+    const newUrl = formatUrl(url)
+    const tempId = Math.random().toString() // Temporary ID for rendering
+
+    // 1. Optimistically update UI
+    const tempBookmark = {
+      id: tempId,
+      title: title,
+      url: newUrl,
+      user_id: user.id,
+      created_at: new Date().toISOString(),
+    }
+    setBookmarks(prev => [tempBookmark, ...prev])
+    
+    // Clear inputs immediately
+    const savedTitle = title
+    const savedUrl = url
+    setTitle('')
+    setUrl('')
+
+    // 2. Actual database call
+    const { error } = await supabase.from('bookmarks').insert([
+      { title: savedTitle, url: newUrl, user_id: user.id }
+    ])
+
+    if (error) {
+      console.error("Add failed:", error.message)
+      fetchBookmarks() // Re-fetch to remove the fake entry
+      alert("Failed to save bookmark.")
+    }
+  }
+
+  // --- OPTIMISTIC DELETE LOGIC ---
+  const handleDelete = async (id: string) => {
+    setBookmarks(prev => prev.filter(b => b.id !== id))
+    
+    const { error } = await supabase.from('bookmarks').delete().eq('id', id)
+    
+    if (error) {
+      fetchBookmarks() 
+      alert("Failed to delete bookmark.")
+    }
+  }
+
+  const login = () => supabase.auth.signInWithOAuth({ 
+    provider: 'google', 
+    options: { redirectTo: `${window.location.origin}/auth/callback` } 
+  })
+
+  if (!user) return (
+    <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-4 text-white">
+      <div className="text-center bg-slate-800/50 p-12 rounded-3xl border border-slate-700 backdrop-blur-md shadow-2xl">
+        <h1 className="text-4xl font-black mb-2">Smart<span className="text-indigo-400">Mark</span></h1>
+        <p className="text-slate-400 mb-8">Your digital library, synced in real-time.</p>
+        <button onClick={login} className="flex items-center gap-3 bg-white text-slate-900 px-8 py-3 rounded-xl font-bold hover:bg-slate-100 transition-all active:scale-95">
+          <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="" />
+          Sign in with Google
+        </button>
+      </div>
     </div>
-  );
+  )
+
+  return (
+    <div className="min-h-screen bg-[#0f172a] text-slate-200 p-6">
+      <div className="max-w-3xl mx-auto">
+        <header className="flex justify-between items-center mb-10">
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">My Bookmarks</h1>
+          <button onClick={() => supabase.auth.signOut().then(() => setUser(null))} className="text-slate-400 hover:text-white text-sm">Logout</button>
+        </header>
+
+        <section className="bg-slate-800/40 border border-slate-700 p-6 rounded-2xl mb-10 shadow-xl">
+          <form onSubmit={handleAdd} className="flex flex-col md:flex-row gap-3">
+            <input className="flex-1 bg-slate-900/50 border border-slate-700 p-3 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Title" value={title} onChange={e => setTitle(e.target.value)} required />
+            <input className="flex-1 bg-slate-900/50 border border-slate-700 p-3 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="URL" value={url} onChange={e => setUrl(e.target.value)} required />
+            <button className="bg-indigo-600 hover:bg-indigo-500 px-8 py-3 rounded-xl font-bold transition-all shadow-lg shadow-indigo-500/20">Add</button>
+          </form>
+        </section>
+
+        <div className="grid gap-4">
+          {bookmarks.map(b => (
+            <div key={b.id} className="group bg-slate-800/30 border border-slate-700/50 p-5 rounded-2xl flex justify-between items-center hover:bg-slate-800/60 transition-all">
+              <div className="truncate pr-4">
+                <h3 className="text-white font-semibold truncate">{b.title}</h3>
+                <a href={formatUrl(b.url)} target="_blank" className="text-indigo-400 text-sm hover:underline truncate block">{b.url}</a>
+              </div>
+              <button onClick={() => handleDelete(b.id)} className="opacity-0 group-hover:opacity-100 text-red-400 bg-red-500/10 p-2 rounded-lg hover:bg-red-500/20 transition-all">
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
 }
